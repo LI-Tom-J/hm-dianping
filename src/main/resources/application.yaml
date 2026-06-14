@@ -1,0 +1,97 @@
+# 服务器配置
+server:
+  port: 8081
+
+# Spring核心配置
+spring:
+  application:
+    name: hmdp
+  profiles:
+    active: dev
+  main:
+    allow-circular-references: true
+
+  mail:
+    host: smtp.qq.com          # QQ邮箱SMTP服务器地址
+    port: 587                  # 端口号（也可以用465，对应SSL）
+    username: 226692954@qq.com # 你的QQ邮箱账号（就是你截图里的那个）
+    password: hyudbibwuwozbgje # 刚才拿到的授权码，不是QQ密码！
+    default-encoding: UTF-8
+    properties:
+      mail:
+        smtp:
+          auth: true
+          starttls:
+            enable: true
+            required: true
+  # 数据库配置（已修复：使用Spring Boot 2.3.x默认HikariCP连接池，完美兼容）
+  datasource:
+    driver-class-name: com.mysql.jdbc.Driver
+    url: jdbc:mysql://127.0.0.1:3306/hmdp?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+    username: root
+    password: lpj060426
+    # HikariCP连接池配置（Spring Boot 2.3.x默认，无需额外依赖）
+    hikari:
+      minimum-idle: 5
+      maximum-pool-size: 20
+      connection-timeout: 60000
+      idle-timeout: 300000
+      max-lifetime: 1800000
+
+  # Redis配置（完全保留你的参数）
+  redis:
+    host: 127.0.0.1
+    port: 6379
+    password: lpj060426
+    database: 0
+    timeout: 10000ms
+    lettuce:
+      pool:
+        max-active: 10
+        max-idle: 10
+        min-idle: 1
+        time-between-eviction-runs: 10s
+
+  # JSON序列化配置
+  jackson:
+    default-property-inclusion: non_null
+    time-zone: GMT+8
+
+# MyBatis-Plus配置
+mybatis-plus:
+  type-aliases-package: com.hmdp.entity
+  mapper-locations: classpath:mapper/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+
+# 日志配置
+logging:
+  level:
+    com.hmdp: debug
+    org.springframework: warn
+
+# ==================== 可选功能配置（保留所有原参数） ====================
+# JWT令牌配置
+
+  jwt:
+    admin-secret-key: itcast
+    admin-ttl: 7200000
+    admin-token-name: token
+    user-secret-key: itheima
+    user-ttl: 7200000
+    user-token-name: authentication
+
+  # 微信小程序配置
+  wechat:
+    appid: wxf39af5fa8029d8f4
+    secret: d272684de31f2b3b85b9ddcc7f655c09
+
+# 阿里云OSS配置
+aliyun:
+  oss:
+    endpoint: https://oss-cn-wuhan-lr.aliyuncs.com
+    bucketName: daodao-sky-take-out
+    region: cn-wuhan-lr
+
+
