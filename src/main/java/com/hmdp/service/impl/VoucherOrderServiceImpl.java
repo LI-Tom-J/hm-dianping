@@ -61,6 +61,15 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             return Result.fail("优惠卷库存不足");
         }
 
+        int orderCount=lambdaQuery()
+                .eq(VoucherOrder::getUserId,currentUser.getId())
+                .eq(VoucherOrder::getVoucherId,voucherId)
+                .count();
+
+        if(orderCount>0){
+            return Result.fail("不能重复购买一张优惠卷");
+        }
+
         boolean stockUpdated = seckillVoucherService.lambdaUpdate()
                 .setSql("stock=stock-1")
                 .eq(SeckillVoucher::getVoucherId,voucherId)
