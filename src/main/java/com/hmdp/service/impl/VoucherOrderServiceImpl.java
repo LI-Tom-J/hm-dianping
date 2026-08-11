@@ -10,7 +10,6 @@ import com.hmdp.service.IVoucherOrderService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.utils.RedisIdWorker;
 import com.hmdp.utils.UserHolder;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -26,13 +25,9 @@ import java.time.LocalDateTime;
 public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, VoucherOrder> implements IVoucherOrderService {
 
     @Resource
-    private IVoucherOrderService voucherOrderService;
-    @Resource
     private RedisIdWorker redisIdWorker;
-    @Autowired
-    private ISeckillVoucherService SeckillVoucherService;
-    @Autowired
-    private ISeckillVoucherService iSeckillVoucherService;
+    @Resource
+    private ISeckillVoucherService seckillVoucherService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -47,7 +42,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             return Result.fail("请先登录");
         }
 
-        SeckillVoucher seckillVoucher=SeckillVoucherService
+        SeckillVoucher seckillVoucher=seckillVoucherService
                 .getById(voucherId);
         if(seckillVoucher==null){
             return Result.fail("秒杀卷不存在");
@@ -66,7 +61,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             return Result.fail("优惠卷库存不足");
         }
 
-        boolean stockUpdated = iSeckillVoucherService.lambdaUpdate()
+        boolean stockUpdated = seckillVoucherService.lambdaUpdate()
                 .setSql("stock=stock-1")
                 .eq(SeckillVoucher::getVoucherId,voucherId)
                 .gt(SeckillVoucher::getStock,0)
