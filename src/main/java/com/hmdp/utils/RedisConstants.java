@@ -21,4 +21,8 @@ public class RedisConstants {
     public static final String USER_SIGN_KEY = "sign:";
     public static final String CACHE_SHOP_TYPE_KEY = "cache:shopType";
 
+    /**
+     * 全局唯一ID的Redis自增序列前缀
+     */
+    public static final String ID_INCREMENT_KEY_PREFIX = "icr:";
 }
