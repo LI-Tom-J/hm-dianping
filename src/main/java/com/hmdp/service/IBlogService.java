@@ -16,4 +16,5 @@ public interface IBlogService extends IService<Blog> {
 
     Result queryBlogByUserId(Long userId, Integer current);
 
+    Result queryBlogById(Long blogId);
 }

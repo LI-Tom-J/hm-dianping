@@ -87,4 +87,12 @@ public class BlogController {
 
         return blogService.queryBlogByUserId(userId, current);
     }
+
+    /**
+     * 根据博客ID查询详情
+     */
+    @GetMapping("/{id}")
+    public Result queryBlogById(@PathVariable("id") Long blogId) {
+        return blogService.queryBlogById(blogId);
+    }
 }
