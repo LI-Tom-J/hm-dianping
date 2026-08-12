@@ -21,7 +21,8 @@ import java.time.LocalDateTime;
 
 import static com.hmdp.utils.RedisConstants.LOCK_ORDER_KEY;
 import static com.hmdp.utils.RedisConstants.LOCK_ORDER_TTL;
-
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 /**
  * 优惠券订单业务实现类
  */
@@ -38,6 +39,9 @@ public class VoucherOrderServiceImpl
 
     @Resource
     private StringRedisTemplate stringRedisTemplate;
+
+    @Resource
+    private  RedissonClient redissonClient;
 
     @Override
     public Result seckillVoucher(Long voucherId) {
@@ -72,11 +76,15 @@ public class VoucherOrderServiceImpl
         Long userId = currentUser.getId();
 
         // 4. 所有服务实例竞争同一个用户锁，保证同一用户的下单流程串行执行。
-        SimpleRedisLock lock = new SimpleRedisLock(
-                LOCK_ORDER_KEY + userId,
-                stringRedisTemplate
-        );
-        boolean lockAcquired = lock.tryLock(LOCK_ORDER_TTL);
+//        SimpleRedisLock lock = new SimpleRedisLock(
+//                LOCK_ORDER_KEY + userId,
+//                stringRedisTemplate
+//        );
+//        boolean lockAcquired = lock.tryLock(LOCK_ORDER_TTL);
+
+        RLock lock=redissonClient.getLock(LOCK_ORDER_KEY+userId);
+
+        boolean lockAcquired=lock.tryLock();
 
         if (!lockAcquired) {
             return Result.fail("请勿重复下单");
