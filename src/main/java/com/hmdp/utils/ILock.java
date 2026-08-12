@@ -14,6 +14,6 @@ public interface ILock {
     /**
      * 释放当前请求持有的锁。
      */
-    void unlock(Long timeoutSec);
+    void unlock();
 
 }

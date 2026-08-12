@@ -35,7 +35,7 @@ public class SimpleRedisLock implements ILock{
     }
 
     @Override
-    public void unlock(Long timeoutSec) {
+    public void unlock() {
     String ownerId=getOwnerId();
     String storeOwnerId=
             stringRedisTemplate.opsForValue().get(key);
