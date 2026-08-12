@@ -10,7 +10,10 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.util.StringUtils;
 
 /**
- * Redisson客户端配置
+ * Redisson客户端配置。
+ *
+ * RedissonClient由Spring IoC容器统一创建和管理，业务Bean通过依赖注入使用，
+ * 避免每个Service重复创建连接池和网络线程。
  */
 @Configuration
 public class RedissonConfig {
@@ -28,7 +31,9 @@ public class RedissonConfig {
     private int database;
 
     /**
-     * 将RedissonClient交给Spring容器管理，业务Service只需要注入使用。
+     * 创建当前项目单节点Redis对应的Redisson客户端。
+     *
+     * destroyMethod保证Spring容器关闭时同步释放连接和线程资源。
      */
     @Bean(destroyMethod = "shutdown")
     public RedissonClient redissonClient() {
@@ -38,7 +43,7 @@ public class RedissonConfig {
                 .setAddress("redis://" + host + ":" + port)
                 .setDatabase(database);
 
-        // 本地Redis可能没有密码，空密码不能直接传给Redisson。
+        // 本地Redis可能未配置密码，空密码不能直接传给Redisson。
         if (StringUtils.hasText(password)) {
             serverConfig.setPassword(password);
         }

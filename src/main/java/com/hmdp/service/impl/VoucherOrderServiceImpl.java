@@ -9,10 +9,10 @@ import com.hmdp.mapper.VoucherOrderMapper;
 import com.hmdp.service.ISeckillVoucherService;
 import com.hmdp.service.IVoucherOrderService;
 import com.hmdp.utils.RedisIdWorker;
-import com.hmdp.utils.SimpleRedisLock;
 import com.hmdp.utils.UserHolder;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.aop.framework.AopContext;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -20,9 +20,7 @@ import javax.annotation.Resource;
 import java.time.LocalDateTime;
 
 import static com.hmdp.utils.RedisConstants.LOCK_ORDER_KEY;
-import static com.hmdp.utils.RedisConstants.LOCK_ORDER_TTL;
-import org.redisson.api.RLock;
-import org.redisson.api.RedissonClient;
+
 /**
  * 优惠券订单业务实现类
  */
@@ -38,10 +36,7 @@ public class VoucherOrderServiceImpl
     private ISeckillVoucherService seckillVoucherService;
 
     @Resource
-    private StringRedisTemplate stringRedisTemplate;
-
-    @Resource
-    private  RedissonClient redissonClient;
+    private RedissonClient redissonClient;
 
     @Override
     public Result seckillVoucher(Long voucherId) {
@@ -75,29 +70,35 @@ public class VoucherOrderServiceImpl
 
         Long userId = currentUser.getId();
 
-        // 4. 所有服务实例竞争同一个用户锁，保证同一用户的下单流程串行执行。
-//        SimpleRedisLock lock = new SimpleRedisLock(
-//                LOCK_ORDER_KEY + userId,
-//                stringRedisTemplate
-//        );
-//        boolean lockAcquired = lock.tryLock(LOCK_ORDER_TTL);
+        /*
+         * 4. 锁按用户ID划分，只让同一用户的并发请求串行执行，
+         * 不同用户仍然可以并发下单，避免把整场秒杀退化为单线程处理。
+         */
+        RLock lock = redissonClient.getLock(LOCK_ORDER_KEY + userId);
 
-        RLock lock=redissonClient.getLock(LOCK_ORDER_KEY+userId);
-
-        boolean lockAcquired=lock.tryLock();
+        /*
+         * 不指定租约时间时，Redisson会通过WatchDog为仍在执行的业务自动续期；
+         * tryLock()获取失败立即返回，避免秒杀请求长时间阻塞等待。
+         */
+        boolean lockAcquired = lock.tryLock();
 
         if (!lockAcquired) {
             return Result.fail("请勿重复下单");
         }
 
         try {
-            // 通过 Spring AOP 代理调用，确保 createVoucherOrder() 的事务注解生效。
+            /*
+             * 通过Spring AOP代理调用事务方法；如果使用this调用，
+             * 不会经过代理对象，createVoucherOrder()上的事务注解将无法生效。
+             */
             IVoucherOrderService proxy =
                     (IVoucherOrderService) AopContext.currentProxy();
             return proxy.createVoucherOrder(voucherId);
         } finally {
-            // 无论事务提交还是回滚都释放锁，Lua脚本会校验当前线程是否仍是持有者。
-            lock.unlock();
+            // 仅由持锁线程释放，避免异常状态下误释放其他线程后来获得的锁。
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
         }
     }
 
