@@ -24,7 +24,18 @@ public class RedisConstants {
      */
     public static final Long LOCK_ORDER_TTL = 10L;
 
+    /**
+     * 秒杀库存使用String结构，并在秒杀活动结束时自动过期。
+     */
     public static final String SECKILL_STOCK_KEY = "seckill:stock:";
+
+    /**
+     * 已获得秒杀资格的用户使用Set结构：
+     * key为seckill:order:{voucherId}，成员为userId。
+     *
+     * Set能够通过SISMEMBER快速判断用户是否已经下过单。
+     */
+    public static final String SECKILL_ORDER_KEY = "seckill:order:";
     public static final String BLOG_LIKED_KEY = "blog:liked:";
     public static final String FEED_KEY = "feed:";
     public static final String SHOP_GEO_KEY = "shop:geo:";

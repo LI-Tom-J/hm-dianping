@@ -20,6 +20,12 @@ import javax.annotation.Resource;
 import java.time.LocalDateTime;
 
 import static com.hmdp.utils.RedisConstants.LOCK_ORDER_KEY;
+import static com.hmdp.utils.RedisConstants.SECKILL_ORDER_KEY;
+import static com.hmdp.utils.RedisConstants.SECKILL_STOCK_KEY;import org.springframework.core.io.ClassPathResource;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
+
+import java.util.Arrays;
 
 /**
  * 优惠券订单业务实现类
@@ -29,6 +35,14 @@ public class VoucherOrderServiceImpl
         extends ServiceImpl<VoucherOrderMapper, VoucherOrder>
         implements IVoucherOrderService {
 
+        private static final DefaultRedisScript<Long> SECKILL_SCRIPT;
+        static {
+            SECKILL_SCRIPT = new DefaultRedisScript<>();
+            SECKILL_SCRIPT.setLocation(new ClassPathResource("seckill.lua"));
+            SECKILL_SCRIPT.setResultType(Long.class);
+        }
+
+
     @Resource
     private RedisIdWorker redisIdWorker;
 
@@ -37,6 +51,9 @@ public class VoucherOrderServiceImpl
 
     @Resource
     private RedissonClient redissonClient;
+
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
 
     @Override
     public Result seckillVoucher(Long voucherId) {
@@ -51,55 +68,89 @@ public class VoucherOrderServiceImpl
             return Result.fail("请先登录");
         }
 
-        // 3. 秒杀开始前先校验活动是否存在、时间是否合法以及当前是否还有库存。
-        SeckillVoucher seckillVoucher = seckillVoucherService.getById(voucherId);
-        if (seckillVoucher == null) {
-            return Result.fail("秒杀券不存在");
-        }
-
-        LocalDateTime now = LocalDateTime.now();
-        if (now.isBefore(seckillVoucher.getBeginTime())) {
-            return Result.fail("秒杀尚未开始");
-        }
-        if (now.isAfter(seckillVoucher.getEndTime())) {
-            return Result.fail("秒杀已经结束");
-        }
-        if (seckillVoucher.getStock() == null || seckillVoucher.getStock() <= 0) {
-            return Result.fail("秒杀券库存不足");
-        }
+//        // 3. 秒杀开始前先校验活动是否存在、时间是否合法以及当前是否还有库存。
+//        SeckillVoucher seckillVoucher = seckillVoucherService.getById(voucherId);
+//        if (seckillVoucher == null) {
+//            return Result.fail("秒杀券不存在");
+//        }
+//
+//        LocalDateTime now = LocalDateTime.now();
+//        if (now.isBefore(seckillVoucher.getBeginTime())) {
+//            return Result.fail("秒杀尚未开始");
+//        }
+//        if (now.isAfter(seckillVoucher.getEndTime())) {
+//            return Result.fail("秒杀已经结束");
+//        }
+//        if (seckillVoucher.getStock() == null || seckillVoucher.getStock() <= 0) {
+//            return Result.fail("秒杀券库存不足");
+//        }
+//
+//        Long userId = currentUser.getId();
+//
+//        /*
+//         * 4. 锁按用户ID划分，只让同一用户的并发请求串行执行，
+//         * 不同用户仍然可以并发下单，避免把整场秒杀退化为单线程处理。
+//         */
+//        RLock lock = redissonClient.getLock(LOCK_ORDER_KEY + userId);
+//
+//        /*
+//         * 不指定租约时间时，Redisson会通过WatchDog为仍在执行的业务自动续期；
+//         * tryLock()获取失败立即返回，避免秒杀请求长时间阻塞等待。
+//         */
+//        boolean lockAcquired = lock.tryLock();
+//
+//        if (!lockAcquired) {
+//            return Result.fail("请勿重复下单");
+//        }
+//
+//        try {
+//            /*
+//             * 通过Spring AOP代理调用事务方法；如果使用this调用，
+//             * 不会经过代理对象，createVoucherOrder()上的事务注解将无法生效。
+//             */
+//            IVoucherOrderService proxy =
+//                    (IVoucherOrderService) AopContext.currentProxy();
+//            return proxy.createVoucherOrder(voucherId);
+//        } finally {
+//            // 仅由持锁线程释放，避免异常状态下误释放其他线程后来获得的锁。
+//            if (lock.isHeldByCurrentThread()) {
+//                lock.unlock();
+//
 
         Long userId = currentUser.getId();
 
-        /*
-         * 4. 锁按用户ID划分，只让同一用户的并发请求串行执行，
-         * 不同用户仍然可以并发下单，避免把整场秒杀退化为单线程处理。
-         */
-        RLock lock = redissonClient.getLock(LOCK_ORDER_KEY + userId);
+        String stockKey = SECKILL_STOCK_KEY + voucherId;
+        String orderKey = SECKILL_ORDER_KEY + voucherId;
+        Long scriptResult = stringRedisTemplate.execute(
+                SECKILL_SCRIPT,
+                Arrays.asList(stockKey, orderKey),
+                userId.toString()
+        );
 
-        /*
-         * 不指定租约时间时，Redisson会通过WatchDog为仍在执行的业务自动续期；
-         * tryLock()获取失败立即返回，避免秒杀请求长时间阻塞等待。
-         */
-        boolean lockAcquired = lock.tryLock();
-
-        if (!lockAcquired) {
-            return Result.fail("请勿重复下单");
+        if(scriptResult == null){
+            return Result.fail("秒杀服务暂时不可用");
         }
 
-        try {
-            /*
-             * 通过Spring AOP代理调用事务方法；如果使用this调用，
-             * 不会经过代理对象，createVoucherOrder()上的事务注解将无法生效。
-             */
-            IVoucherOrderService proxy =
+        if(scriptResult.intValue() == 1L){
+            return Result.fail("秒杀卷库存不足");
+        }
+
+        if(scriptResult.intValue() == 2L){
+            return Result.fail("不能重复购买同一张优惠卷");
+        }
+
+        if(scriptResult.intValue() == 3L){
+            return Result.fail("秒杀卷库存尚未优化");
+        }
+        if(scriptResult.intValue() == 0L){
+            return Result.fail("秒杀资格校验失败");
+        }
+
+
+        IVoucherOrderService proxy =
                     (IVoucherOrderService) AopContext.currentProxy();
             return proxy.createVoucherOrder(voucherId);
-        } finally {
-            // 仅由持锁线程释放，避免异常状态下误释放其他线程后来获得的锁。
-            if (lock.isHeldByCurrentThread()) {
-                lock.unlock();
-            }
-        }
+
     }
 
     @Override
