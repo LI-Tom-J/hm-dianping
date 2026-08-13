@@ -21,7 +21,8 @@ import java.time.LocalDateTime;
 
 import static com.hmdp.utils.RedisConstants.LOCK_ORDER_KEY;
 import static com.hmdp.utils.RedisConstants.SECKILL_ORDER_KEY;
-import static com.hmdp.utils.RedisConstants.SECKILL_STOCK_KEY;import org.springframework.core.io.ClassPathResource;
+import static com.hmdp.utils.RedisConstants.SECKILL_STOCK_KEY;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 
@@ -142,7 +143,7 @@ public class VoucherOrderServiceImpl
         if(scriptResult.intValue() == 3L){
             return Result.fail("秒杀卷库存尚未优化");
         }
-        if(scriptResult.intValue() == 0L){
+        if (scriptResult != 0L) {
             return Result.fail("秒杀资格校验失败");
         }
 
