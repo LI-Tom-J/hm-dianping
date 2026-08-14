@@ -1,5 +1,6 @@
 package com.hmdp.service.impl;
 
+import cn.hutool.core.bean.BeanUtil;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.dto.Result;
 import com.hmdp.dto.UserDTO;
@@ -13,24 +14,37 @@ import com.hmdp.utils.UserHolder;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
-import org.springframework.aop.framework.AopContext;
+import org.springframework.boot.ApplicationArguments;
+import org.springframework.boot.ApplicationRunner;
+import org.springframework.context.annotation.Lazy;
+import org.springframework.core.NestedExceptionUtils;
 import org.springframework.core.io.ClassPathResource;
+import org.springframework.data.redis.RedisSystemException;
+import org.springframework.data.redis.connection.stream.Consumer;
+import org.springframework.data.redis.connection.stream.MapRecord;
+import org.springframework.data.redis.connection.stream.ReadOffset;
+import org.springframework.data.redis.connection.stream.StreamOffset;
+import org.springframework.data.redis.connection.stream.StreamReadOptions;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.CollectionUtils;
 
-import javax.annotation.PostConstruct;
 import javax.annotation.PreDestroy;
 import javax.annotation.Resource;
+import java.time.Duration;
 import java.util.Arrays;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
+import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 import static com.hmdp.utils.RedisConstants.LOCK_ORDER_KEY;
 import static com.hmdp.utils.RedisConstants.SECKILL_ORDER_KEY;
+import static com.hmdp.utils.RedisConstants.SECKILL_ORDER_STREAM_CONSUMER;
+import static com.hmdp.utils.RedisConstants.SECKILL_ORDER_STREAM_GROUP;
+import static com.hmdp.utils.RedisConstants.SECKILL_ORDER_STREAM_KEY;
 import static com.hmdp.utils.RedisConstants.SECKILL_STOCK_KEY;
 
 /**
@@ -40,24 +54,19 @@ import static com.hmdp.utils.RedisConstants.SECKILL_STOCK_KEY;
 @Service
 public class VoucherOrderServiceImpl
         extends ServiceImpl<VoucherOrderMapper, VoucherOrder>
-        implements IVoucherOrderService {
+        implements IVoucherOrderService, ApplicationRunner {
 
     private static final long SCRIPT_SUCCESS = 0L;
     private static final long SCRIPT_STOCK_NOT_ENOUGH = 1L;
     private static final long SCRIPT_DUPLICATE_ORDER = 2L;
     private static final long SCRIPT_STOCK_NOT_INITIALIZED = 3L;
-    private static final int ORDER_QUEUE_CAPACITY = 1024;
+    private static final Duration STREAM_BLOCK_TIMEOUT = Duration.ofSeconds(2);
+    private static final long CONSUME_FAILURE_RETRY_MILLIS = 100L;
 
     /**
      * 脚本对象全类共享，避免每次秒杀请求重新读取脚本资源。
      */
     private static final DefaultRedisScript<Long> SECKILL_SCRIPT;
-
-    /**
-     * 单线程消费者让HTTP请求无需等待MySQL写入。
-     */
-    private static final ExecutorService ORDER_EXECUTOR =
-            Executors.newSingleThreadExecutor();
 
     static {
         SECKILL_SCRIPT = new DefaultRedisScript<>();
@@ -66,10 +75,14 @@ public class VoucherOrderServiceImpl
     }
 
     /**
-     * 有界队列限制JVM内等待订单的数量，避免无限占用内存。
+     * Stream订单消费者使用独立单线程，避免HTTP请求等待MySQL落库。
      */
-    private final BlockingQueue<VoucherOrder> orderTasks =
-            new ArrayBlockingQueue<>(ORDER_QUEUE_CAPACITY);
+    private final ExecutorService orderExecutor =
+            Executors.newSingleThreadExecutor(runnable -> {
+                Thread thread = new Thread(runnable);
+                thread.setName("voucher-order-stream-consumer");
+                return thread;
+            });
 
     @Resource
     private RedisIdWorker redisIdWorker;
@@ -84,90 +97,87 @@ public class VoucherOrderServiceImpl
     private StringRedisTemplate stringRedisTemplate;
 
     /**
-     * 后台线程必须通过Spring代理调用事务方法，不能使用this直接调用。
+     * 后台消费者必须通过Spring代理调用事务方法。
+     * Lazy避免当前Service创建时立即解析自身依赖而形成循环依赖。
      */
-    private IVoucherOrderService proxy;
+    @Lazy
+    @Resource
+    private IVoucherOrderService voucherOrderServiceProxy;
 
     /**
-     * Spring完成Bean创建和依赖注入后启动订单消费者。
+     * 应用启动完成后先保证消费组存在，再启动后台订单消费者。
      */
-    @PostConstruct
-    private void initializeOrderHandler() {
-        ORDER_EXECUTOR.submit(new VoucherOrderHandler());
+    @Override
+    public void run(ApplicationArguments args) {
+        createStreamConsumerGroup();
+        orderExecutor.submit(new VoucherOrderHandler());
     }
 
     /**
-     * 容器关闭时中断阻塞在take()上的消费者并释放线程池资源。
+     * Spring Data Redis会通过MKSTREAM在Stream不存在时创建空Stream。
+     */
+    private void createStreamConsumerGroup() {
+        try {
+            stringRedisTemplate.opsForStream().createGroup(
+                    SECKILL_ORDER_STREAM_KEY,
+                    ReadOffset.from("0"),
+                    SECKILL_ORDER_STREAM_GROUP
+            );
+        } catch (RedisSystemException e) {
+            Throwable rootCause = NestedExceptionUtils.getMostSpecificCause(e);
+            String message = rootCause.getMessage();
+
+            // 应用重复启动时消费组已经存在，BUSYGROUP属于正常情况。
+            if (message == null || !message.contains("BUSYGROUP")) {
+                throw e;
+            }
+        }
+    }
+
+    /**
+     * 容器关闭时中断阻塞读取，并释放消费者线程池。
      */
     @PreDestroy
     private void shutdownOrderHandler() {
-        ORDER_EXECUTOR.shutdownNow();
+        orderExecutor.shutdownNow();
     }
 
     /**
-     * 请求线程只负责Redis资格判断和订单排队。
+     * TODO 学习任务1：
+     * 生成订单ID，并调用Lua原子完成资格判断、库存扣减和Stream消息投递。
      */
     @Override
     public Result seckillVoucher(Long voucherId) {
-        // 1. 空ID不能用于拼接Redis key。
-        if (voucherId == null) {
-            return Result.fail("优惠券id不能为空");
+        if(voucherId == null){
+            return Result.fail("优惠卷id不能为空");
         }
-
-        // 2. 一人一单依赖当前登录用户。
         UserDTO currentUser = UserHolder.getUser();
-        if (currentUser == null) {
+        if(currentUser == null){
             return Result.fail("请先登录");
         }
-
         Long userId = currentUser.getId();
-        String stockKey = SECKILL_STOCK_KEY + voucherId;
-        String orderKey = SECKILL_ORDER_KEY + voucherId;
 
-        /*
-         * 3. Lua在Redis中原子完成库存判断、一人一单判断、
-         * 库存扣减和用户资格记录。
-         */
-        Long scriptResult = stringRedisTemplate.execute(
-                SECKILL_SCRIPT,
-                Arrays.asList(stockKey, orderKey),
-                userId.toString()
+        Long orderId=redisIdWorker.nextId("order");
+
+        Long scriptResult = stringRedisTemplate.execute(SECKILL_SCRIPT, Arrays.asList(
+                        SECKILL_STOCK_KEY + voucherId,
+                        SECKILL_ORDER_KEY + voucherId,
+                        SECKILL_ORDER_STREAM_KEY
+                ),
+                userId.toString(),
+                voucherId.toString(),
+                Long.toString(orderId)
         );
-
-        Result failureResult = resolveScriptFailure(scriptResult);
-        if (failureResult != null) {
+        Result failureResult =
+                resolveScriptFailure(scriptResult);
+        if(failureResult!=null) {
             return failureResult;
         }
-
-        // 4. 请求线程提前生成订单ID，使接口无需等待MySQL写入。
-        long orderId = redisIdWorker.nextId("order");
-        VoucherOrder voucherOrder = new VoucherOrder();
-        voucherOrder.setId(orderId);
-        voucherOrder.setUserId(userId);
-        voucherOrder.setVoucherId(voucherId);
-
-        /*
-         * 5. 先保存当前AOP调用中的Spring代理，再把订单交给后台线程。
-         * BlockingQueue的put/take也提供生产者与消费者之间的内存可见性。
-         */
-        proxy = (IVoucherOrderService) AopContext.currentProxy();
-
-        try {
-            /*
-             * 当前课程阶段使用内存阻塞队列演示异步下单；
-             * 后续会改为Redis Stream解决持久化、ACK和失败重试问题。
-             */
-            orderTasks.put(voucherOrder);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return Result.fail("订单排队被中断");
-        }
-
         return Result.ok(orderId);
     }
 
     /**
-     * 返回null表示Lua返回0，用户取得了秒杀资格。
+     * 返回null表示Lua返回0，用户取得秒杀资格且订单消息已经写入Stream。
      */
     private Result resolveScriptFailure(Long scriptResult) {
         if (scriptResult == null) {
@@ -191,7 +201,8 @@ public class VoucherOrderServiceImpl
     }
 
     /**
-     * 后台线程持续从阻塞队列中获取订单。
+     * TODO 学习任务2：
+     * 使用消费者组阻塞读取“>”位置的新消息，异常时转入Pending List处理。
      */
     private class VoucherOrderHandler implements Runnable {
 
@@ -199,45 +210,154 @@ public class VoucherOrderServiceImpl
         public void run() {
             while (!Thread.currentThread().isInterrupted()) {
                 try {
-                    /*
-                     * 队列为空时take会阻塞线程，
-                     * 新订单进入队列后才继续执行，避免CPU空转。
-                     */
-                    VoucherOrder voucherOrder = orderTasks.take();
-                    handleVoucherOrder(voucherOrder);
-                } catch (InterruptedException e) {
-                    // 应用关闭时恢复中断状态并正常结束消费者线程。
-                    Thread.currentThread().interrupt();
-                    log.info("秒杀订单消费者线程已停止");
-                    return;
+                    // 1. 使用“>”读取当前消费组尚未分配的新订单消息
+                    List<MapRecord<String, Object, Object>> records =
+                            readNewOrderMessage();
+
+                    // 阻塞读取超时后可能没有消息，此时继续等待即可
+                    if (CollectionUtils.isEmpty(records)) {
+                        continue;
+                    }
+
+                    // 2. 完成MySQL事务后再确认消息
+                    processOrderRecord(records.get(0));
                 } catch (RuntimeException e) {
-                    /*
-                     * 单条订单失败不能终止整个消费者，
-                     * 否则后续订单会永久积压在队列中。
-                     */
-                    log.error("异步秒杀订单处理失败", e);
+                    // 容器关闭时不再进入Pending重试流程
+                    if (Thread.currentThread().isInterrupted()) {
+                        log.info("Redis Stream秒杀订单消费者已停止");
+                        return;
+                    }
+
+                    log.error("读取或处理Redis Stream秒杀订单失败", e);
+
+                    // 3. 消费失败的消息会进入Pending List，需要单独重新处理
+                    handlePendingMessages();
+                    pauseAfterFailure();
                 }
             }
         }
     }
 
+    private List<MapRecord<String, Object, Object>> readNewOrderMessage() {
+        List<MapRecord<String, Object, Object>> records =
+                stringRedisTemplate.opsForStream().read(
+                        Consumer.from(
+                                SECKILL_ORDER_STREAM_GROUP,
+                                SECKILL_ORDER_STREAM_CONSUMER
+                        ),
+                        StreamReadOptions.empty()
+                                .count(1)
+                                .block(STREAM_BLOCK_TIMEOUT),
+                        StreamOffset.create(
+                                SECKILL_ORDER_STREAM_KEY,
+                                ReadOffset.lastConsumed()
+                        )
+                );
+        return  records==null?Collections.emptyList():records;
+
+    }
+
+
     /**
-     * 对从队列取出的订单执行用户级并发保护。
+     * TODO 学习任务3：
+     * 从偏移量“0”读取当前消费者尚未ACK的Pending消息并重试。
+     */
+    private void handlePendingMessages() {
+        while (!Thread.currentThread().isInterrupted()) {
+            try {
+
+                List<MapRecord<String, Object, Object>> records =
+                        stringRedisTemplate.opsForStream().read(
+                                Consumer.from(
+                                        SECKILL_ORDER_STREAM_GROUP,
+                                        SECKILL_ORDER_STREAM_CONSUMER
+                                ),
+                                StreamReadOptions.empty().count(1),
+                                StreamOffset.create(
+                                        SECKILL_ORDER_STREAM_KEY,
+                                        ReadOffset.from("0")
+                                )
+                        );
+
+                if(CollectionUtils.isEmpty(records)){
+                    return;
+                }
+                processOrderRecord(records.get(0));
+            }catch (RuntimeException e){
+                if (Thread.currentThread().isInterrupted()) {
+                    return;
+                }
+                log.error("处理Redis Stream Pending订单失败", e);
+                pauseAfterFailure();
+            }
+        }
+
+        // 核心消费逻辑由学习者手敲。
+    }
+
+    /**
+     * TODO 学习任务4：
+     * 将Stream记录转换为VoucherOrder，完成MySQL事务后再ACK。
+     */
+    private void processOrderRecord(MapRecord<String, Object, Object> record) {
+        // 核心消费逻辑由学习者手敲。
+    VoucherOrder voucherOrder=BeanUtil.fillBeanWithMap(
+            record.getValue(),
+            new VoucherOrder(),
+            true
+    );
+    if(voucherOrder.getId()==null||voucherOrder.getUserId()==null||
+    voucherOrder.getVoucherId()==null){
+        throw new IllegalArgumentException(
+                "Redis Stream订单消息字段不完整，recordId=" + record.getId()
+        );
+
+    }
+
+    handleVoucherOrder(voucherOrder);
+    Long acknowledged=stringRedisTemplate.opsForStream().acknowledge(
+            SECKILL_ORDER_STREAM_KEY,
+            SECKILL_ORDER_STREAM_GROUP,
+            record.getId()
+    );
+    if(acknowledged==null||acknowledged==0L){
+        log.warn(
+                "Redis Stream订单消息ACK失败，recordId={}, orderId={}",
+                record.getId(),
+                voucherOrder.getId()
+        );
+    }
+
+
+    }
+
+    /**
+     * 失败后短暂等待，避免异常期间高速循环占满CPU和日志。
+     */
+    private void pauseAfterFailure() {
+        try {
+            Thread.sleep(CONSUME_FAILURE_RETRY_MILLIS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * Redisson按用户ID保护订单业务临界区。
      */
     private void handleVoucherOrder(VoucherOrder voucherOrder) {
         Long userId = voucherOrder.getUserId();
         RLock lock = redissonClient.getLock(LOCK_ORDER_KEY + userId);
 
         /*
-         * 订单已经从队列移除，因此这里等待取得用户锁，
-         * 避免一次tryLock失败就静默丢弃已经取得Redis资格的订单。
-         * 未指定租约时间时，Redisson WatchDog会为仍在执行的业务自动续期。
+         * 不指定固定租约时间，让WatchDog在业务仍执行时自动续期，
+         * 防止MySQL事务未完成时锁提前过期。
          */
         lock.lock();
 
         try {
             // 通过Spring代理调用，保证createVoucherOrder上的事务生效。
-            proxy.createVoucherOrder(voucherOrder);
+            voucherOrderServiceProxy.createVoucherOrder(voucherOrder);
         } finally {
             if (lock.isHeldByCurrentThread()) {
                 lock.unlock();
@@ -251,14 +371,10 @@ public class VoucherOrderServiceImpl
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void createVoucherOrder(VoucherOrder voucherOrder) {
-        /*
-         * 后台线程不能读取请求线程的UserHolder，
-         * 用户ID和优惠券ID必须从入队时创建的订单对象中获取。
-         */
         Long userId = voucherOrder.getUserId();
         Long voucherId = voucherOrder.getVoucherId();
 
-        // 1. 数据库再次校验一人一单，为绕过Redis的异常写入路径提供第二层保护。
+        // 1. 数据库再次校验一人一单，为重复投递提供第二层幂等保护。
         int orderCount = lambdaQuery()
                 .eq(VoucherOrder::getUserId, userId)
                 .eq(VoucherOrder::getVoucherId, voucherId)
@@ -274,8 +390,8 @@ public class VoucherOrderServiceImpl
         }
 
         /*
-         * 2. stock > 0与库存扣减放在同一条SQL中，
-         * 防止多个用户同时扣减最后一份库存造成超卖。
+         * stock > 0和库存扣减位于同一条SQL中，
+         * 防止并发扣减最后一份库存时发生超卖。
          */
         boolean stockUpdated = seckillVoucherService.lambdaUpdate()
                 .setSql("stock = stock - 1")
@@ -287,10 +403,7 @@ public class VoucherOrderServiceImpl
             throw new IllegalStateException("数据库秒杀库存不足");
         }
 
-        /*
-         * 3. 保存失败必须抛出异常，
-         * Spring才能回滚前面的数据库库存扣减。
-         */
+        // 保存失败必须抛出异常，使Spring回滚同一事务内的库存扣减。
         if (!save(voucherOrder)) {
             throw new IllegalStateException("秒杀订单创建失败");
         }

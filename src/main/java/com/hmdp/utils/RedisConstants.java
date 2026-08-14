@@ -36,6 +36,22 @@ public class RedisConstants {
      * Set能够通过SISMEMBER快速判断用户是否已经下过单。
      */
     public static final String SECKILL_ORDER_KEY = "seckill:order:";
+
+    /**
+     * 秒杀订单消息使用Redis Stream持久化，避免JVM重启后内存队列中的订单丢失。
+     */
+    public static final String SECKILL_ORDER_STREAM_KEY = "stream.orders";
+
+    /**
+     * 同一消费组内的消费者共同分担订单消息，并通过ACK维护待处理列表。
+     */
+    public static final String SECKILL_ORDER_STREAM_GROUP = "g1";
+
+    /**
+     * 当前项目先按单实例教学运行，固定消费者名称便于应用重启后读取自己的Pending消息。
+     */
+    public static final String SECKILL_ORDER_STREAM_CONSUMER = "c1";
+
     public static final String BLOG_LIKED_KEY = "blog:liked:";
     public static final String FEED_KEY = "feed:";
     public static final String SHOP_GEO_KEY = "shop:geo:";
