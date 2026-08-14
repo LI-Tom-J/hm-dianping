@@ -208,6 +208,12 @@ public class VoucherOrderServiceImpl
 
         @Override
         public void run() {
+            /*
+             * 应用可能在数据库处理完成前宕机，导致消息已经进入Pending但尚未ACK。
+             * 启动时先恢复历史消息，避免它们一直留在Pending List中。
+             */
+            handlePendingMessages();
+
             while (!Thread.currentThread().isInterrupted()) {
                 try {
                     // 1. 使用“>”读取当前消费组尚未分配的新订单消息
@@ -299,36 +305,56 @@ public class VoucherOrderServiceImpl
      * TODO 学习任务4：
      * 将Stream记录转换为VoucherOrder，完成MySQL事务后再ACK。
      */
-    private void processOrderRecord(MapRecord<String, Object, Object> record) {
-        // 核心消费逻辑由学习者手敲。
-    VoucherOrder voucherOrder=BeanUtil.fillBeanWithMap(
-            record.getValue(),
-            new VoucherOrder(),
-            true
-    );
-    if(voucherOrder.getId()==null||voucherOrder.getUserId()==null||
-    voucherOrder.getVoucherId()==null){
-        throw new IllegalArgumentException(
-                "Redis Stream订单消息字段不完整，recordId=" + record.getId()
+    /**
+     * 将Stream消息转换成订单，数据库事务成功后再ACK。
+     */
+    private void processOrderRecord(
+            MapRecord<String, Object, Object> record) {
+
+        /*
+         * Lua写入Stream的字段名称与VoucherOrder属性名称保持一致，
+         * 因此可以将id、userId、voucherId直接转换成订单对象。
+         */
+        VoucherOrder voucherOrder = BeanUtil.fillBeanWithMap(
+                record.getValue(),
+                new VoucherOrder(),
+                true
         );
 
-    }
+        /*
+         * 字段不完整的消息不能直接访问数据库。
+         * 抛出异常后消息不会ACK，会留在Pending List中等待排查。
+         */
+        if (voucherOrder.getId() == null
+                || voucherOrder.getUserId() == null
+                || voucherOrder.getVoucherId() == null) {
+            throw new IllegalArgumentException(
+                    "Redis Stream订单消息字段不完整，recordId=" + record.getId()
+            );
+        }
 
-    handleVoucherOrder(voucherOrder);
-    Long acknowledged=stringRedisTemplate.opsForStream().acknowledge(
-            SECKILL_ORDER_STREAM_KEY,
-            SECKILL_ORDER_STREAM_GROUP,
-            record.getId()
-    );
-    if(acknowledged==null||acknowledged==0L){
-        log.warn(
-                "Redis Stream订单消息ACK失败，recordId={}, orderId={}",
-                record.getId(),
-                voucherOrder.getId()
-        );
-    }
+        // 数据库事务成功返回后，才允许确认消息
+        handleVoucherOrder(voucherOrder);
 
+        Long acknowledged =
+                stringRedisTemplate.opsForStream().acknowledge(
+                        SECKILL_ORDER_STREAM_KEY,
+                        SECKILL_ORDER_STREAM_GROUP,
+                        record.getId()
+                );
 
+        /*
+         * ACK失败时不能只记录日志后继续消费，
+         * 抛出异常可以让外层进入Pending消息恢复流程。
+         */
+        if (acknowledged == null || acknowledged == 0L) {
+            throw new IllegalStateException(
+                    "Redis Stream订单消息ACK失败，recordId="
+                            + record.getId()
+                            + ", orderId="
+                            + voucherOrder.getId()
+            );
+        }
     }
 
     /**
