@@ -43,12 +43,12 @@ public class BlogController {
         return Result.ok(blog.getId());
     }
 
+    /**
+     * 点赞或取消点赞。
+     */
     @PutMapping("/like/{id}")
-    public Result likeBlog(@PathVariable("id") Long id) {
-        // 修改点赞数量
-        blogService.update()
-                .setSql("liked = liked + 1").eq("id", id).update();
-        return Result.ok();
+    public Result likeBlog(@PathVariable("id") Long blogId) {
+        return blogService.likeBlog(blogId);
     }
 
     @GetMapping("/of/me")
@@ -63,23 +63,17 @@ public class BlogController {
         return Result.ok(records);
     }
 
+    /**
+     * 分页查询热门探店笔记。
+     */
     @GetMapping("/hot")
-    public Result queryHotBlog(@RequestParam(value = "current", defaultValue = "1") Integer current) {
-        // 根据用户查询
-        Page<Blog> page = blogService.query()
-                .orderByDesc("liked")
-                .page(new Page<>(current, SystemConstants.MAX_PAGE_SIZE));
-        // 获取当前页数据
-        List<Blog> records = page.getRecords();
-        // 查询用户
-        records.forEach(blog ->{
-            Long userId = blog.getUserId();
-            User user = userService.getById(userId);
-            blog.setName(user.getNickName());
-            blog.setIcon(user.getIcon());
-        });
-        return Result.ok(records);
+    public Result queryHotBlog(
+            @RequestParam(value = "current", defaultValue = "1")
+            Integer current) {
+
+        return blogService.queryHotBlog(current);
     }
+
     @GetMapping("/of/user")
     public Result queryBlogByUserId(
             @RequestParam("id") Long userId,
@@ -95,4 +89,6 @@ public class BlogController {
     public Result queryBlogById(@PathVariable("id") Long blogId) {
         return blogService.queryBlogById(blogId);
     }
+
+
 }
