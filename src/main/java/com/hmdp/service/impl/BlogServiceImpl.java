@@ -240,7 +240,7 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
         long publishTime = System.currentTimeMillis();
 
         for (Follow follow : followers) {
-            Long followerId=follow.getFollowUserId();
+            Long followerId=follow.getUserId();
             String feedKey=FEED_KEY+followerId;
 
             stringRedisTemplate.opsForZSet().add(
