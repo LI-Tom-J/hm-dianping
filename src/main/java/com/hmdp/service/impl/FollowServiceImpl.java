@@ -9,10 +9,12 @@ import com.hmdp.service.IFollowService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.service.IUserService;
 import com.hmdp.utils.UserHolder;
+import org.springframework.beans.BeanUtils;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
+
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
@@ -31,6 +33,11 @@ import static com.hmdp.utils.RedisConstants.FOLLOW_KEY;
 @Service
 public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> implements IFollowService {
 
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
+    @Resource
+    private IUserService userService;
+
     @Override
     public Result follow(Long followUserId, Boolean isFollow) {
        if(followUserId==null){
@@ -44,6 +51,8 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
            return Result.fail("请先登录");
        }
        Long userId=currentUser.getId();
+       String key=FOLLOW_KEY+userId;
+
        if(userId.equals(followUserId)){
            return Result.fail("不能关注自己");
        }
@@ -53,20 +62,34 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
                    .eq(Follow::getFollowUserId,followUserId)
                    .count();
            if(followedCount>0){
+               /*
+                * 数据库已经存在关系时仍执行SADD。
+                * SADD本身具有幂等性，可以顺便修复Redis缺失的关注关系。
+                */
+               stringRedisTemplate.opsForSet()
+                       .add(key,followUserId.toString());
+
                return Result.ok();
            }
            Follow follow = new Follow();
            follow.setUserId(userId);
            follow.setFollowUserId(followUserId);
+
            boolean saved=save(follow);
            if(!saved){
                return Result.fail("关注失败");
            }
+           stringRedisTemplate.opsForSet()
+                   .add(key,followUserId.toString());
+
        }else {
            lambdaUpdate()
                    .eq(Follow::getUserId,userId)
                    .eq(Follow::getFollowUserId,followUserId)
                    .remove();
+
+           stringRedisTemplate.opsForSet()
+                   .remove(key, followUserId.toString());
        }
         return Result.ok();
 
@@ -88,5 +111,36 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
                 .count();
 
         return Result.ok(followedCount>0);
+    }
+
+    @Override
+    public Result followCommons(Long otherUserId) {
+        if(otherUserId==null){
+            return Result.fail("用户id不能为空");
+        }
+        UserDTO currentUser = UserHolder.getUser();
+        if(currentUser==null){
+            return Result.fail("请先登录");
+        }
+        String currentUserKey=FOLLOW_KEY+currentUser.getId();
+        String otherUserKey=FOLLOW_KEY+otherUserId;
+
+        Set<String> commonUserIds=stringRedisTemplate.opsForSet()
+                .intersect(currentUserKey,otherUserKey);
+
+        if(commonUserIds==null||commonUserIds.isEmpty()){
+            return Result.ok(Collections.emptyList());
+        }
+
+        List<Long> userIds=commonUserIds.stream()
+                .map(Long::valueOf)
+                .collect(Collectors.toList());
+
+        List<UserDTO> commonUsers=userService.listByIds(userIds)
+                .stream()
+                .map(user-> BeanUtil.copyProperties(user,UserDTO.class))
+                .collect(Collectors.toList());
+
+        return Result.ok(commonUsers);
     }
 }
