@@ -182,5 +182,34 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
 
     }
 
+    @Override
+    public Result queryBlogLikes(Long blogId) {
+        if(blogId==null){
+            return Result.fail("博客id不能为空");
+        }
+        String key = BLOG_LIKED_KEY + blogId;
 
+        Set<String> top5UserIds=stringRedisTemplate.opsForZSet()
+                .range(key,0,4);
+        if(top5UserIds==null||top5UserIds.isEmpty()){
+            return  Result.ok(Collections.emptyList());
+        }
+
+        List<Long> userIds=top5UserIds.stream()
+                .map(Long::valueOf)
+                .collect(Collectors.toList());
+
+        String userIdStr = StrUtil.join(",",userIds);
+
+        List<UserDTO> users=userService.query()
+                .in("id",userIds)
+                .last(("order by field(id,"+userIdStr+")"))
+                .list()
+                .stream()
+                .map(user -> BeanUtil.copyProperties(user, UserDTO.class))
+                .collect(Collectors.toList());
+
+
+        return Result.ok(users);
+    }
 }
