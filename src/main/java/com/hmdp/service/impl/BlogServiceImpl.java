@@ -6,10 +6,12 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.hmdp.dto.Result;
 import com.hmdp.dto.UserDTO;
 import com.hmdp.entity.Blog;
+import com.hmdp.entity.Follow;
 import com.hmdp.entity.User;
 import com.hmdp.mapper.BlogMapper;
 import com.hmdp.service.IBlogService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.hmdp.service.IFollowService;
 import com.hmdp.service.IUserService;
 import com.hmdp.utils.SystemConstants;
 import com.hmdp.utils.UserHolder;
@@ -23,6 +25,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 import static com.hmdp.utils.RedisConstants.BLOG_LIKED_KEY;
+import static com.hmdp.utils.RedisConstants.FEED_KEY;
 
 /**
  * <p>
@@ -37,6 +40,9 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
 
     @Resource
     private IUserService userService;
+
+    @Resource
+    private IFollowService followService;
 
     @Resource
     private StringRedisTemplate stringRedisTemplate;
@@ -211,5 +217,39 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
 
 
         return Result.ok(users);
+    }
+
+    @Override
+    public Result saveBlog(Blog blog) {
+        UserDTO currentUser = UserHolder.getUser();
+        if (currentUser == null) {
+            return Result.fail("请先登录");
+        }
+
+        blog.setUserId(currentUser.getId());
+
+        boolean saved=save(blog);
+        if(!saved){
+            return Result.fail("发布笔记失败");
+        }
+
+        List<Follow> followers = followService.lambdaQuery()
+                .eq(Follow::getFollowUserId,currentUser.getId())
+                .list();
+
+        long publishTime = System.currentTimeMillis();
+
+        for (Follow follow : followers) {
+            Long followerId=follow.getFollowUserId();
+            String feedKey=FEED_KEY+followerId;
+
+            stringRedisTemplate.opsForZSet().add(
+                    feedKey,
+                    blog.getId().toString(),
+                    publishTime
+            );
+        }
+
+        return Result.ok(blog.getId());
     }
 }
