@@ -323,7 +323,7 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
 
         List<Blog> blogs=lambdaQuery()
                 .in(Blog::getId,blogIds)
-                .last("order by field(id，"+blogIdStr+")")
+                .last("order by field(id,"+blogIdStr+")")
                 .list();
 
         blogs.forEach(blog -> {
