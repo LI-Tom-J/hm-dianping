@@ -71,6 +71,14 @@ public class UserController {
         return Result.ok(user);
     }
 
+    /**
+     * 记录当前登录用户今天的签到状态。
+     */
+    @PostMapping("/sign")
+    public Result sign() {
+        return userService.sign();
+    }
+
 
     @GetMapping("/{id}")
     public Result queryUserById(@PathVariable("id") Long userId) {

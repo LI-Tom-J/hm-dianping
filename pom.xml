@@ -34,7 +34,8 @@
         <jjwt>0.9.1</jjwt>
         <jaxb-api>2.3.1</jaxb-api>
         <poi>3.16</poi>
-        <mybatis-plus>3.4.3</mybatis-plus>
+        <!-- 3.5.7兼容高版本JDK的Lambda解析，并保留3.5.9之前的分页解析器打包方式 -->
+        <mybatis-plus>3.5.7</mybatis-plus>
         <hutool>5.7.17</hutool>
         <redisson.version>3.13.6</redisson.version>
     </properties>
@@ -241,22 +242,4 @@
         </plugins>
     </build>
 
-    <profiles>
-        <!--
-            MyBatis-Plus 3.4.3需要读取SerializedLambda元数据。
-            JDK 9开始启用模块访问限制，因此仅在高版本JDK运行时开放该包；Java 8不会激活此配置。
-        -->
-        <profile>
-            <id>jdk9-plus-module-access</id>
-            <activation>
-                <jdk>[9,)</jdk>
-            </activation>
-            <properties>
-                <spring-boot.run.jvmArguments>
-                    --add-opens=java.base/java.lang.invoke=ALL-UNNAMED
-                </spring-boot.run.jvmArguments>
-                <argLine>--add-opens=java.base/java.lang.invoke=ALL-UNNAMED</argLine>
-            </properties>
-        </profile>
-    </profiles>
 </project>
