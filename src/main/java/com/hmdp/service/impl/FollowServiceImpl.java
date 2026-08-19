@@ -57,7 +57,8 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
            return Result.fail("不能关注自己");
        }
        if(Boolean.TRUE.equals(isFollow)){
-           int followedCount = lambdaQuery()
+           // MyBatis-Plus 3.5.x的count()返回long，避免关注数量较大时发生整数溢出。
+           long followedCount = lambdaQuery()
                    .eq(Follow::getUserId,userId)
                    .eq(Follow::getFollowUserId,followUserId)
                    .count();
@@ -105,7 +106,7 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
             return Result.fail("请先登录");
         }
 
-        int followedCount=lambdaQuery()
+        long followedCount=lambdaQuery()
                 .eq(Follow::getUserId,currentUser.getId())
                 .eq(Follow::getFollowUserId,followUserId)
                 .count();
