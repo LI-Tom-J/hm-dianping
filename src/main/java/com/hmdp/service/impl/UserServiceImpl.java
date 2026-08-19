@@ -12,12 +12,17 @@ import com.hmdp.entity.User;
 import com.hmdp.mapper.UserMapper;
 import com.hmdp.service.IUserService;
 import com.hmdp.utils.RegexUtils;
+import com.hmdp.utils.UserHolder;
+import org.springframework.data.redis.connection.BitFieldSubCommands;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import com.hmdp.utils.RedisConstants;
 import javax.annotation.Resource;
 import javax.servlet.http.HttpSession;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
@@ -108,6 +113,67 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         return Result.ok(userDTO);
 
 
+    }
+
+    @Override
+    public Result sign() {
+        Long userId=UserHolder.getUser().getId();
+
+        LocalDateTime now = LocalDateTime.now();
+        String month=now.format(
+                DateTimeFormatter.ofPattern(":yyyyMM"));
+        String key=USER_SIGN_KEY+userId+month;
+        int dayofMonth = now.getDayOfMonth();
+        int offset=dayofMonth-1;
+
+        stringRedisTemplate.opsForValue()
+                .setBit(key,offset,true);
+
+
+        return Result.ok();
+    }
+
+    @Override
+    public Result signCount() {
+
+        Long userId=UserHolder.getUser().getId();
+        LocalDateTime now = LocalDateTime.now();
+        String month=now.format(
+                DateTimeFormatter.ofPattern(":yyyyMM")
+        );
+        String key=USER_SIGN_KEY+userId+month;
+        int dayofMonth = now.getDayOfMonth();
+
+        List<Long> bitFieldResult=
+                stringRedisTemplate.opsForValue().bitField(
+                        key,
+                        BitFieldSubCommands.create()
+                                .get(
+                                        BitFieldSubCommands.BitFieldType
+                                                .unsigned((dayofMonth))
+                                )
+                                .valueAt(0)
+                );
+        if (bitFieldResult == null
+                || bitFieldResult.isEmpty()
+                || bitFieldResult.get(0) == null) {
+            return Result.ok(0);
+        }
+
+        // 4. Redis把签到位转换成一个数字返回
+        long signBits = bitFieldResult.get(0);
+        int continuousDays = 0;
+
+        // 5. 数字最低位代表今天，从今天开始向前统计连续的1
+        while ((signBits & 1) == 1) {
+            continuousDays++;
+
+            // 无符号右移一位，继续检查前一天
+            signBits >>>= 1;
+        }
+
+
+        return Result.ok(continuousDays);
     }
 
 }

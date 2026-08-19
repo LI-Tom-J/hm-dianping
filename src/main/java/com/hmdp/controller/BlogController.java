@@ -2,12 +2,11 @@ package com.hmdp.controller;
 
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.hmdp.dto.FeedQueryDTO;
 import com.hmdp.dto.Result;
 import com.hmdp.dto.UserDTO;
 import com.hmdp.entity.Blog;
-import com.hmdp.entity.User;
 import com.hmdp.service.IBlogService;
-import com.hmdp.service.IUserService;
 import com.hmdp.utils.SystemConstants;
 import com.hmdp.utils.UserHolder;
 import org.springframework.web.bind.annotation.*;
@@ -15,34 +14,19 @@ import org.springframework.web.bind.annotation.*;
 import javax.annotation.Resource;
 import java.util.List;
 
-/**
- * <p>
- * 前端控制器
- * </p>
- *
- * @author 虎哥
- * @since 2021-12-22
- */
+
 @RestController
 @RequestMapping("/blog")
 public class BlogController {
 
     @Resource
     private IBlogService blogService;
-    @Resource
-    private IUserService userService;
 
     @PostMapping
     public Result saveBlog(@RequestBody Blog blog) {
-        // 获取登录用户
-        UserDTO user = UserHolder.getUser();
-        blog.setUserId(user.getId());
-        // 保存探店博文
-        blogService.save(blog);
-        // 返回id
-        return Result.ok(blog.getId());
+        // 发布和推送属于业务流程，统一交给Service处理
+        return blogService.saveBlog(blog);
     }
-
     /**
      * 点赞或取消点赞。
      */
@@ -93,6 +77,11 @@ public class BlogController {
     @GetMapping("/likes/{id}")
     public Result queryBlogLikes(@PathVariable("id") Long blogId) {
         return blogService.queryBlogLikes(blogId);
+    }
+
+    @GetMapping("/of/follow")
+    public Result queryBlogOfFollow(@ModelAttribute FeedQueryDTO query) {
+        return blogService.queryBlogOfFollow(query);
     }
 
 }

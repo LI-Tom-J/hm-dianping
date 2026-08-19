@@ -401,7 +401,8 @@ public class VoucherOrderServiceImpl
         Long voucherId = voucherOrder.getVoucherId();
 
         // 1. 数据库再次校验一人一单，为重复投递提供第二层幂等保护。
-        int orderCount = lambdaQuery()
+        // MyBatis-Plus 3.5.x的count()返回long，避免订单数量较大时发生整数溢出。
+        long orderCount = lambdaQuery()
                 .eq(VoucherOrder::getUserId, userId)
                 .eq(VoucherOrder::getVoucherId, voucherId)
                 .count();

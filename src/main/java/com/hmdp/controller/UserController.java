@@ -71,6 +71,22 @@ public class UserController {
         return Result.ok(user);
     }
 
+    /**
+     * 记录当前登录用户今天的签到状态。
+     */
+    @PostMapping("/sign")
+    public Result sign() {
+        return userService.sign();
+    }
+
+    /**
+     * 统计当前用户截至今天的连续签到天数。
+     */
+    @GetMapping("/sign/count")
+    public Result signCount() {
+        return userService.signCount();
+    }
+
 
     @GetMapping("/{id}")
     public Result queryUserById(@PathVariable("id") Long userId) {
